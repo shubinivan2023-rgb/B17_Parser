@@ -45,8 +45,8 @@ KEYWORDS = [
     "СВО", "боевой стресс", "боевая травма", "боевых действий",
 ]
 
-DELAY_MIN = 8.0
-DELAY_MAX = 12.0
+DELAY_MIN = 12.0
+DELAY_MAX = 20.0
 
 OUTPUT_FILE = "b17_contacts.csv"
 
@@ -258,7 +258,11 @@ def main():
     all_results = []
     done = False
 
-    for city in CITIES:
+    cities = CITIES[:]
+    random.shuffle(cities)
+    print(f"   Порядок городов: {', '.join(cities)}")
+
+    for city in cities:
         if done:
             break
 
@@ -293,7 +297,7 @@ def main():
 
                 if not kw_found:
                     print("—")
-                    time.sleep(random.uniform(5.0, 8.0))
+                    time.sleep(random.uniform(8.0, 14.0))
                     continue
 
                 # Подходит!
@@ -324,7 +328,7 @@ def main():
                 time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
             page += 1
-            time.sleep(random.uniform(15.0, 25.0))  # Долгая пауза между страницами
+            time.sleep(random.uniform(25.0, 45.0))  # Долгая пауза между страницами
 
     save_csv(all_results, OUTPUT_FILE)
 
