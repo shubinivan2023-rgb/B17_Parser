@@ -21,11 +21,15 @@ import csv
 import time
 import re
 import random
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ——— НАСТРОЙКА ————————————————————————————————————————————————————
 
-# Вставь сюда ВСЮ строку Cookie из Network tab браузера:
-RAW_COOKIE = "__ddg9_=95.24.125.196; __ddg1_=R8hXeSp8ku4CJKtKTMfI; c_city_ip=321; _ym_uid=1774102149407106425; _ym_d=1774102149; _ym_isad=2; ck_stick_visit=1; utm=consultation_help; c_city=91; visits=10; c_id=1308005; password=x8bc5eb82f15f535594028251abca7a2f; sid=%201308005%20; active_update_text=0-0-0-0-; retina=1; active_update_unix=1774106119; __ddg8_=lLf7rmRfxdwwDTMa; __ddg10_=1774106310"
+# Cookie берётся из .env файла (RAW_COOKIE="...")
+RAW_COOKIE = os.getenv("RAW_COOKIE", "")
 
 # Города для парсинга (slug из URL b17.ru/psiholog/ГОРОД/)
 CITIES = [
