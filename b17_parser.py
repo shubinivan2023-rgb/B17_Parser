@@ -1,14 +1,14 @@
 """
-Парсер психологов с b17.ru (двухэтапный)
-=========================================
-Этап 1: Быстрый прогон по карточкам каталога с широкими ключевыми словами
-Этап 2: Deep scan только по кандидатам из этапа 1, фильтр по узким военным ключевым
+Парсер психологов с b17.ru
+==========================
+Deep scan с узкими военными ключевыми словами.
+Останавливается при наборе MAX_RESULTS.
 
 НАСТРОЙКА:
 1. Открой Chrome -> b17.ru (авторизуйся)
 2. F12 -> вкладка Network -> кликни любой запрос к b17.ru
 3. Headers -> Request Headers -> скопируй всю строку Cookie:
-4. Вставь в RAW_COOKIE ниже
+4. Вставь в .env файл: RAW_COOKIE="..."
 5. Запусти: python b17_parser.py
 
 Результат: b17_contacts.csv
@@ -28,65 +28,94 @@ load_dotenv()
 
 # ——— НАСТРОЙКА ————————————————————————————————————————————————————
 
-# Cookie берётся из .env файла (RAW_COOKIE="...")
 RAW_COOKIE = os.getenv("RAW_COOKIE", "")
 
-# Города для парсинга (slug из URL b17.ru/psiholog/ГОРОД/)
 CITIES = [
     "moskva",
     "spb",
-    # "novosibirsk",
-    # "ekaterinburg",
+    "novosibirsk",
+    "ekaterinburg",
 ]
 
-# Сколько страниц парсить на город (на каждой ~10 специалистов)
-# None = все страницы
 MAX_PAGES = None
-
-# Этап 1: широкие ключевые слова для быстрого отсева по карточкам каталога
-BROAD_KEYWORDS = [
-    "ПТСР", "птср", "посттравматическ", "травм", "ДПДГ", "EMDR",
-    "военн", "военнослужащ", "комбатант", "СВО", "боевых действий",
-]
-
-# Этап 2: узкие ключевые слова — ищем на полном профиле кандидатов
-NARROW_KEYWORDS = [
-    "военн", "военнослужащ", "комбатант", "ветеран боев",
-    "СВО", "боевой стресс", "боевая травма", "боевых действий",
-    "участник боев", "зона боев", "вооружённ", "мобилизац",
-    "афган", "чечн", "горячая точка", "горячих точ",
-]
-
-# Сколько финальных результатов набрать (None = без лимита)
 MAX_RESULTS = 30
 
-# Задержка между запросами (секунды)
-DELAY_MIN = 1.0
-DELAY_MAX = 2.0
+KEYWORDS = [
+    "военн", "военнослужащ", "комбатант", "ветеран боев",
+    "СВО", "боевой стресс", "боевая травма", "боевых действий",
+]
+
+DELAY_MIN = 8.0
+DELAY_MAX = 12.0
 
 OUTPUT_FILE = "b17_contacts.csv"
 
 # ——— КОД ——————————————————————————————————————————————————————————
 
-HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Referer": "https://www.b17.ru/",
-    "Accept-Language": "ru-RU,ru;q=0.9",
-    "Cookie": RAW_COOKIE,
-}
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+]
+
+# Пауза на отдых: каждые N страниц — перерыв
+PAGES_BEFORE_REST = 30
+REST_MIN = 300   # секунды (5 мин)
+REST_MAX = 600   # секунды (10 мин)
+
+# Если забанили — ждём и пробуем снова
+BAN_WAIT = 3600  # секунды (60 мин)
+BAN_RETRIES = 5  # сколько раз пытаться после бана
 
 session = requests.Session()
-session.headers.update(HTTP_HEADERS)
+session.headers.update({
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Connection": "keep-alive",
+    "Referer": "https://www.b17.ru/",
+    "Cookie": RAW_COOKIE,
+})
+
+_request_count = 0
 
 
-def matches_keywords(text: str, keywords: list[str]) -> list[str]:
-    """Проверяет текст на наличие ключевых слов. Возвращает найденные."""
-    if not keywords:
+def safe_get(url: str, **kwargs) -> requests.Response:
+    """Обёртка над session.get с ротацией User-Agent, паузами и обходом бана."""
+    global _request_count
+    session.headers["User-Agent"] = random.choice(USER_AGENTS)
+    _request_count += 1
+
+    # Каждые PAGES_BEFORE_REST запросов — отдыхаем
+    if _request_count % (PAGES_BEFORE_REST * 10) == 0:
+        rest = random.uniform(REST_MIN, REST_MAX)
+        print(f"\n  😴 Отдых {int(rest // 60)} мин ({_request_count} запросов сделано)...\n")
+        time.sleep(rest)
+
+    for ban_attempt in range(BAN_RETRIES):
+        r = session.get(url, **kwargs)
+
+        # Проверяем бан
+        if "IP" in r.text and "заблокирован" in r.text:
+            print(f"\n  🚫 БАН! Ждём {BAN_WAIT // 60} мин (попытка {ban_attempt + 1}/{BAN_RETRIES})...")
+            time.sleep(BAN_WAIT)
+            session.headers["User-Agent"] = random.choice(USER_AGENTS)
+            continue
+
+        return r
+
+    raise requests.RequestException("Не удалось обойти бан после нескольких попыток")
+
+
+def matches_keywords(text: str) -> list[str]:
+    if not KEYWORDS:
         return []
     found = []
     text_lower = text.lower()
-    for kw in keywords:
+    for kw in KEYWORDS:
         if len(kw) <= 3:
             if re.search(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
                 found.append(kw)
@@ -97,12 +126,11 @@ def matches_keywords(text: str, keywords: list[str]) -> list[str]:
 
 
 def get_specialist_ids_from_page(city: str, page: int) -> list[dict]:
-    """Получает список специалистов со страницы каталога."""
     url = f"https://www.b17.ru/psiholog/{city}/"
     params = {"page": page} if page > 1 else {}
 
     try:
-        r = session.get(url, params=params, timeout=15)
+        r = safe_get(url, params=params, timeout=15)
         r.raise_for_status()
     except requests.RequestException as e:
         print(f"  ⚠️  Ошибка загрузки страницы {page}: {e}")
@@ -146,11 +174,10 @@ def get_specialist_ids_from_page(city: str, page: int) -> list[dict]:
 
 
 def get_profile_text(profile_url: str) -> str:
-    """Загружает полный текст профиля специалиста."""
     if not profile_url:
         return ""
     try:
-        r = session.get(profile_url, timeout=15)
+        r = safe_get(profile_url, timeout=15)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         for tag in soup(["script", "style"]):
@@ -160,17 +187,23 @@ def get_profile_text(profile_url: str) -> str:
         return ""
 
 
-def get_contacts(spec_id: str) -> dict:
-    """Запрашивает контакты специалиста через API b17."""
+def get_contacts(spec_id: str, retries: int = 3) -> dict:
     url = "https://www.b17.ru/telefon_backend.php"
     params = {"mod": "spec_list", "id": spec_id, "k": "0"}
 
-    try:
-        r = session.get(url, params=params, timeout=10)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        print(f"    ⚠️  Ошибка получения контактов {spec_id}: {e}")
-        return {}
+    for attempt in range(retries):
+        try:
+            r = safe_get(url, params=params, timeout=10)
+            r.raise_for_status()
+            break
+        except requests.RequestException as e:
+            if attempt < retries - 1 and "503" in str(e):
+                wait = 5 * (attempt + 1)
+                print(f"⏳ 503, жду {wait}с...", end=" ")
+                time.sleep(wait)
+            else:
+                print(f"⚠️ Ошибка контактов: {e}")
+                return {"phone": "", "whatsapp": False, "telegram": False, "contact_error": "503"}
 
     contacts = {"phone": "", "whatsapp": False, "telegram": False}
 
@@ -194,149 +227,120 @@ def get_contacts(spec_id: str) -> dict:
 
 
 def save_csv(results: list[dict], filename: str):
-    """Сохраняет результаты в CSV."""
     if not results:
         print("⚠️  Нет данных для сохранения")
         return
 
     fieldnames = ["name", "phone", "whatsapp", "telegram", "profile_url", "city",
-                  "matched_keywords", "description", "spec_id"]
+                  "matched_keywords", "contact_error", "description", "spec_id"]
 
     with open(filename, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(results)
 
-    print(f"\n✅ Сохранено {len(results)} записей в {filename}")
+    print(f"\n💾 Сохранено {len(results)} записей в {filename}")
 
 
-def stage1_collect_candidates() -> list[dict]:
-    """Этап 1: быстрый прогон по карточкам с широкими ключевыми словами."""
-    print("=" * 60)
-    print("ЭТАП 1: Быстрый сбор кандидатов по карточкам каталога")
-    print(f"Широкие ключевые: {', '.join(BROAD_KEYWORDS[:6])}...")
-    print("=" * 60)
+def main():
+    print("🔍 Парсер b17.ru — deep scan, военные ключевые")
+    print(f"   Города: {', '.join(CITIES)}")
+    print(f"   Лимит: {MAX_RESULTS} результатов")
+    print(f"   Ключевые слова: {', '.join(KEYWORDS[:5])}...")
 
-    candidates = []
+    r = safe_get("https://www.b17.ru/", timeout=10)
+    if "Войти" in r.text and "Выйти" not in r.text:
+        print("\n❌ Не авторизован! Проверь RAW_COOKIE в .env")
+        return
+
+    print("✅ Авторизация OK\n")
+
+    all_results = []
+    done = False
 
     for city in CITIES:
-        print(f"\n🏙️  Город: {city}")
+        if done:
+            break
+
+        print(f"🏙️  Город: {city} (набрано {len(all_results)}/{MAX_RESULTS})")
         page = 1
 
         while True:
             if MAX_PAGES and page > MAX_PAGES:
                 break
 
-            print(f"  📄 Страница {page}...", end=" ")
+            print(f"  📄 Стр. {page}...", end=" ")
             specialists = get_specialist_ids_from_page(city, page)
 
             if not specialists:
-                print("пусто, останавливаемся")
+                print("пусто, следующий город")
                 break
 
-            matched_on_page = 0
-            for spec in specialists:
-                kw_found = matches_keywords(spec.get("description", ""), BROAD_KEYWORDS)
-                if kw_found:
-                    spec["broad_keywords"] = ", ".join(set(kw_found))
-                    candidates.append(spec)
-                    matched_on_page += 1
+            print(f"{len(specialists)} чел.")
 
-            print(f"{len(specialists)} спец-тов, подходит: {matched_on_page}")
+            for i, spec in enumerate(specialists):
+                label = spec['name'] or spec['spec_id']
+                print(f"    [{i+1}/{len(specialists)}] {label}...", end=" ")
+
+                # Ищем в описании карточки
+                kw_found = matches_keywords(spec.get("description", ""))
+
+                # Deep scan — загружаем профиль
+                if not kw_found:
+                    time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+                    profile_text = get_profile_text(spec["profile_url"])
+                    kw_found = matches_keywords(profile_text)
+
+                if not kw_found:
+                    print("—")
+                    time.sleep(random.uniform(5.0, 8.0))
+                    continue
+
+                # Подходит!
+                spec["matched_keywords"] = ", ".join(set(kw_found))
+                print(f"✅ [{spec['matched_keywords']}] ", end="")
+
+                # Пауза перед запросом контактов
+                time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+                contacts = get_contacts(spec["spec_id"])
+                spec.update(contacts)
+
+                phone = spec.get("phone", "")
+                wa = "📱WA" if spec.get("whatsapp") else ""
+                tg = "✈️TG" if spec.get("telegram") else ""
+                print(f"{phone} {wa} {tg}")
+
+                all_results.append(spec)
+
+                # Промежуточное сохранение каждые 5 результатов
+                if len(all_results) % 5 == 0:
+                    save_csv(all_results, OUTPUT_FILE)
+
+                if len(all_results) >= MAX_RESULTS:
+                    print(f"\n🎯 Набрано {MAX_RESULTS}!")
+                    done = True
+                    break
+
+                time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
             page += 1
-            time.sleep(random.uniform(1.0, 1.5))
+            time.sleep(random.uniform(15.0, 25.0))  # Долгая пауза между страницами
 
-    print(f"\n📋 Этап 1 завершён: {len(candidates)} кандидатов для глубокой проверки")
-    return candidates
+    save_csv(all_results, OUTPUT_FILE)
 
+    with_phone = sum(1 for r in all_results if r.get("phone"))
+    with_wa = sum(1 for r in all_results if r.get("whatsapp"))
+    with_tg = sum(1 for r in all_results if r.get("telegram"))
 
-def stage2_deep_filter(candidates: list[dict]) -> list[dict]:
-    """Этап 2: deep scan кандидатов, фильтр по узким военным ключевым."""
-    print("\n" + "=" * 60)
-    print("ЭТАП 2: Глубокая проверка профилей по военным ключевым")
-    print(f"Узкие ключевые: {', '.join(NARROW_KEYWORDS[:6])}...")
-    print(f"Кандидатов: {len(candidates)}, лимит: {MAX_RESULTS or 'без лимита'}")
-    print("=" * 60)
+    with_error = sum(1 for r in all_results if r.get("contact_error"))
 
-    results = []
-
-    for i, spec in enumerate(candidates):
-        if MAX_RESULTS and len(results) >= MAX_RESULTS:
-            print(f"\n🎯 Набрано {MAX_RESULTS} результатов!")
-            break
-
-        label = spec['name'] or spec['spec_id']
-        print(f"  [{i+1}/{len(candidates)}] {label}...", end=" ")
-
-        # Сначала проверяем описание карточки по узким ключевым
-        kw_found = matches_keywords(spec.get("description", ""), NARROW_KEYWORDS)
-
-        # Если не нашли — загружаем полный профиль
-        if not kw_found:
-            profile_text = get_profile_text(spec["profile_url"])
-            kw_found = matches_keywords(profile_text, NARROW_KEYWORDS)
-            time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-
-        if not kw_found:
-            print("— не подходит")
-            continue
-
-        # Подходит! Получаем контакты
-        spec["matched_keywords"] = ", ".join(set(kw_found))
-        print(f"✅ [{spec['matched_keywords']}] ", end="")
-
-        contacts = get_contacts(spec["spec_id"])
-        spec.update(contacts)
-
-        phone = spec.get("phone", "")
-        wa = "📱WA" if spec.get("whatsapp") else ""
-        tg = "✈️TG" if spec.get("telegram") else ""
-        print(f"{phone} {wa} {tg}")
-
-        results.append(spec)
-        time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-
-    return results
-
-
-def main():
-    print("🔍 Парсер b17.ru (двухэтапный)")
-    print(f"   Городов: {len(CITIES)}, страниц на город: {MAX_PAGES or 'все'}")
-    print(f"   Лимит результатов: {MAX_RESULTS or 'без лимита'}")
-
-    r = session.get("https://www.b17.ru/", timeout=10)
-    if "Войти" in r.text and "Выйти" not in r.text:
-        print("\n❌ Не авторизован! Проверь RAW_COOKIE в настройках скрипта.")
-        return
-
-    print("✅ Авторизация OK\n")
-
-    # Этап 1: быстрый сбор кандидатов (~20-40 мин на Мск+СПб)
-    candidates = stage1_collect_candidates()
-
-    if not candidates:
-        print("\n⚠️  Кандидатов не найдено. Попробуй расширить BROAD_KEYWORDS.")
-        return
-
-    # Промежуточное сохранение кандидатов
-    save_csv(candidates, "b17_candidates.csv")
-
-    # Этап 2: deep scan кандидатов (~1-2 сек на каждого)
-    results = stage2_deep_filter(candidates)
-
-    save_csv(results, OUTPUT_FILE)
-
-    with_phone = sum(1 for r in results if r.get("phone"))
-    with_wa = sum(1 for r in results if r.get("whatsapp"))
-    with_tg = sum(1 for r in results if r.get("telegram"))
-
-    print(f"\n📊 Итоговая статистика:")
-    print(f"   Кандидатов (этап 1): {len(candidates)}")
-    print(f"   Подходящих (этап 2): {len(results)}")
+    print(f"\n📊 Итого:")
+    print(f"   Найдено: {len(all_results)}")
     print(f"   С телефоном: {with_phone}")
     print(f"   С WhatsApp: {with_wa}")
     print(f"   С Telegram: {with_tg}")
+    if with_error:
+        print(f"   ⚠️  С ошибкой 503 (нет контактов): {with_error}")
 
 
 if __name__ == "__main__":
