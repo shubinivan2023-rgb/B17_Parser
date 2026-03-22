@@ -321,7 +321,10 @@ def main():
                     save_csv(all_results, OUTPUT_FILE)
 
                 if len(all_results) >= MAX_RESULTS:
-                    print(f"\n🎯 Набрано {MAX_RESULTS}!")
+                    print("\n" + "=" * 60)
+                    print(f"🎯 ГОТОВО! Набрано {len(all_results)}/{MAX_RESULTS} результатов!")
+                    print(f"💾 Данные сохранены в {OUTPUT_FILE}")
+                    print("=" * 60 + "\n")
                     done = True
                     break
 
