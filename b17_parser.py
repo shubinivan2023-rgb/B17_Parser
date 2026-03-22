@@ -205,7 +205,7 @@ def get_contacts(spec_id: str, retries: int = 3) -> dict:
                 print(f"⚠️ Ошибка контактов: {e}")
                 return {"phone": "", "whatsapp": False, "telegram": False, "contact_error": "503"}
 
-    contacts = {"phone": "", "whatsapp": False, "telegram": False}
+    contacts = {"phone": "", "whatsapp": False, "telegram": ""}
 
     try:
         data = r.json()
@@ -220,8 +220,10 @@ def get_contacts(spec_id: str, retries: int = 3) -> dict:
     html_lower = html.lower()
     if "whatsapp" in html_lower:
         contacts["whatsapp"] = True
-    if "telegram" in html_lower:
-        contacts["telegram"] = True
+
+    tg_match = re.search(r"https?://t\.me/([A-Za-z0-9_]+)", html)
+    if tg_match:
+        contacts["telegram"] = "@" + tg_match.group(1)
 
     return contacts
 
