@@ -42,7 +42,7 @@ MAX_RESULTS = 30
 
 KEYWORDS = [
     "военн", "военнослужащ", "комбатант", "ветеран боев",
-    "СВО", "боевой стресс", "боевая травма", "боевых действий",
+    "СВО", "боев", "боевых действий",
 ]
 
 DELAY_MIN = 12.0
@@ -110,18 +110,46 @@ def safe_get(url: str, **kwargs) -> requests.Response:
     raise requests.RequestException("Не удалось обойти бан после нескольких попыток")
 
 
+NEGATIVE_PATTERNS = [
+    r"не\s+(работаю|смогу|берусь|консультирую|специализируюсь|занимаюсь|помогу|веду\s+приём)",
+    r"не\s+смогу\s+быть\s+полезн",
+    r"не\s+имею\s+опыта",
+    r"без\s+опыта\s+работы",
+    r"к\s+сожалению.{0,20}не",
+    r"за\s+исключением",
+    r"не\s+входит",
+    r"не\s+включает",
+]
+
+
+def _is_negative_context(text: str, match_start: int) -> bool:
+    """Проверяет, нет ли отрицания рядом с найденным ключевым словом."""
+    # Окно 60 символов — достаточно для фразы, но не захватит далёкий контекст
+    window_start = max(0, match_start - 60)
+    window_end = min(len(text), match_start + 60)
+    context = text[window_start:window_end].lower()
+    for pat in NEGATIVE_PATTERNS:
+        if re.search(pat, context):
+            return True
+    return False
+
+
 def matches_keywords(text: str) -> list[str]:
     if not KEYWORDS:
         return []
     found = []
     text_lower = text.lower()
+    # Слова, которые должны матчиться только целиком (аббревиатуры)
+    EXACT_WORDS = {"СВО"}
+
     for kw in KEYWORDS:
-        if len(kw) <= 3:
-            if re.search(r'\b' + re.escape(kw) + r'\b', text, re.IGNORECASE):
-                found.append(kw)
+        if kw in EXACT_WORDS:
+            pattern = r'\b' + re.escape(kw) + r'\b'
         else:
-            if kw.lower() in text_lower:
-                found.append(kw)
+            pattern = r'\b' + re.escape(kw)
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match and not _is_negative_context(text, match.start()):
+            found.append(kw)
     return found
 
 
@@ -180,9 +208,18 @@ def get_profile_text(profile_url: str) -> str:
         r = safe_get(profile_url, timeout=15)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
-        for tag in soup(["script", "style"]):
-            tag.decompose()
-        return soup.get_text(separator=" ", strip=True)
+
+        parts = []
+        # Основное описание профиля
+        main = soup.find("div", class_="vkladki_body_first")
+        if main:
+            parts.append(main.get_text(separator=" ", strip=True))
+        # Направления работы
+        napr = soup.find("div", class_="napr_list")
+        if napr:
+            parts.append(napr.get_text(separator=" ", strip=True))
+
+        return " ".join(parts) if parts else ""
     except requests.RequestException:
         return ""
 
